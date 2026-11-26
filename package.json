@@ -1,0 +1,34 @@
+{
+  "name": "@ronedgecomb/pi-experientiallabs",
+  "version": "0.1.0",
+  "description": "A Pi model provider for the Experiential Labs gateway",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ronedgecomb/pi-experientiallabs.git"
+  },
+  "keywords": ["pi-package", "experiential", "model-provider"],
+  "type": "module",
+  "files": ["src"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "npm@11.6.2",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.6.1",
+    "@earendil-works/pi-coding-agent": "1.6.1",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}
