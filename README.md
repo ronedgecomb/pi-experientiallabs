@@ -18,6 +18,8 @@ From a checkout, use `pi install .`. Start Pi, or run `/reload` in an open sessi
 2. Run `/login experiential` in Pi and enter the key. You can also set `EXPLABS_API_KEY` or `EXP_API_KEY` before launching Pi.
 3. Open `/model`, search for `experiential`, and select a chat model. Pi refreshes the catalog using your credentials.
 
+Use `/thinking` to choose an effort the gateway advertises for that model. Pi labels the gateway's `none` effort `off`. When a gateway only reports that reasoning is supported, Pi uses its default levels. [Experiential model catalog](https://docs.experientiallabs.ai/reference/list-models)
+
 The hosted gateway's `experiential-small-model` and `experiential-large-model` aliases work from the first launch. With a key configured, you can use either from the command line.
 
 ```sh

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { parseCatalog } from "../src/catalog.ts";
 
 const hosted = "https://api.experientiallabs.ai/api/v1";
@@ -63,4 +64,46 @@ test("preserves explicit input caps and reserves output within a shared window",
   ];
   const limits = parseCatalog({ data }, "experiential", hosted).map(m => [m.contextWindow, m.maxTokens]);
   assert.deepEqual(limits, [[922_000, 128_000], [64_000, 2048], [4096, 4096]]);
+});
+
+test("Pi offers the gateway's named efforts, including models with a single choice", () => {
+  const data = [
+    { id: "flash", supported_reasoning_efforts: ["none", "high", "max"] },
+    { id: "fixed", supports_reasoning: true, supported_reasoning_efforts: ["medium"] },
+    { id: "disabled", supports_reasoning: false, supported_reasoning_efforts: ["max"] },
+    { id: "off-only", supported_reasoning_efforts: ["none"] },
+    { id: "future", supported_reasoning_efforts: ["xhigh", "ultra"] },
+    { id: "empty", supported_reasoning_efforts: [] },
+    { id: "legacy", supports_reasoning: true },
+  ];
+  const models = parseCatalog({ data }, "experiential-local", local);
+  assert.deepEqual(models.map(getSupportedThinkingLevels), [
+    ["off", "high", "max"], ["medium"], ["off"], ["off"], ["xhigh"], ["off"],
+    ["off", "minimal", "low", "medium", "high"],
+  ]);
+  assert.equal(models[0].thinkingLevelMap.off, "none");
+  assert.equal(models[2].reasoning, false);
+  assert.equal(models[3].thinkingLevelMap.off, "none");
+});
+
+test("matches account capabilities by exact ID then canonical slug while preserving catalog IDs", () => {
+  const catalog = { data: [
+    { id: "vendor/demo", canonical_slug: "demo", supported_parameters: ["tools"] },
+    { id: "vendor/demo:fast", canonical_slug: "demo", supported_parameters: ["tools"] },
+    { id: "vendor/demo:free", canonical_slug: "demo", supported_parameters: ["tools"] },
+    { id: "vendor/other", canonical_slug: "other", supported_parameters: ["tools", "reasoning"] },
+  ] };
+  const capabilities = { data: [
+    { id: "demo", supports_reasoning: true, supported_reasoning_efforts: ["high", "max"] },
+    { id: "vendor/demo:fast", supported_reasoning_efforts: ["low"] },
+    { id: "demo:fast", supported_reasoning_efforts: ["minimal"] },
+    { id: "demo:free", supported_reasoning_efforts: ["medium"] },
+    { id: "other", supports_reasoning: false, supported_reasoning_efforts: [] },
+    { id: "private-only", supported_reasoning_efforts: ["medium"] },
+  ] };
+  const models = parseCatalog(catalog, "experiential", hosted, capabilities);
+  assert.deepEqual(models.map(m => [m.id, getSupportedThinkingLevels(m)]), [
+    ["vendor/demo", ["high", "max"]], ["vendor/demo:fast", ["low"]], ["vendor/demo:free", ["medium"]],
+    ["vendor/other", ["off"]],
+  ]);
 });

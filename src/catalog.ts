@@ -1,4 +1,4 @@
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
 
 export type GatewayApi = "openai-completions" | "openai-responses" | "anthropic-messages";
 export type GatewayId = "experiential" | "experiential-local";
@@ -48,7 +48,20 @@ function tokenLimits(entry: Record<string, unknown>): Pick<ChatModel, "contextWi
   return { contextWindow: total ? Math.min(total, contextWindow) : contextWindow, maxTokens };
 }
 
-function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl: string): ChatModel | undefined {
+function thinkingLevels(efforts: unknown, supported: unknown, fallback: boolean): Pick<ChatModel, "reasoning" | "thinkingLevelMap"> {
+  if (supported === false) return { reasoning: false, thinkingLevelMap: {} };
+  if (!Array.isArray(efforts)) return { reasoning: supported === true || fallback };
+
+  const thinkingLevelMap: ThinkingLevelMap = {};
+  for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+    const wire = level === "off" ? "none" : level;
+    thinkingLevelMap[level] = efforts.includes(wire) ? wire : null;
+  }
+  return { reasoning: Object.values(thinkingLevelMap).some(value => value !== null), thinkingLevelMap };
+}
+
+function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl: string,
+  detailsById: ReadonlyMap<string, Record<string, unknown>>): ChatModel | undefined {
   const id = entry.id;
   if (typeof id !== "string" || !id.trim()) return;
   const architecture = record(entry.architecture);
@@ -65,7 +78,12 @@ function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl:
   const advertisedReasoning = Array.isArray(parameters)
     ? parameters.includes("reasoning") || parameters.includes("include_reasoning")
     : api !== "openai-completions";
-  const reasoning = typeof entry.supports_reasoning === "boolean" ? entry.supports_reasoning : advertisedReasoning;
+  const slug = typeof entry.canonical_slug === "string" ? entry.canonical_slug : id;
+  const suffix = id.match(/:[^/:]+$/)?.[0];
+  const nativeId = suffix && !slug.includes(":") ? slug + suffix : slug;
+  const details = detailsById.get(id) ?? detailsById.get(nativeId) ?? detailsById.get(slug);
+  const thinking = thinkingLevels(entry.supported_reasoning_efforts ?? details?.supported_reasoning_efforts,
+    entry.supports_reasoning ?? details?.supports_reasoning, advertisedReasoning);
   const prices = record(entry.pricing);
   const tokensField = entry.chat_max_tokens_field;
 
@@ -77,7 +95,7 @@ function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl:
     // The Anthropic SDK appends /v1/messages to its base URL.
     baseUrl: api === "anthropic-messages" ? baseUrl.replace(/\/v1$/, "") : baseUrl,
     input: vision ? ["text", "image"] : ["text"],
-    reasoning,
+    ...thinking,
     ...tokenLimits(entry),
     cost: {
       input: rate(prices?.prompt, entry.input_nano_usd_per_million_tokens),
@@ -87,16 +105,26 @@ function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl:
     },
     ...(api === "openai-completions" && (tokensField === "max_tokens" || tokensField === "max_completion_tokens")
       ? { compat: { maxTokensField: tokensField } } : {}),
+    ...(api === "anthropic-messages" && thinking.reasoning && thinking.thinkingLevelMap
+      ? { compat: { forceAdaptiveThinking: true } } : {}),
   };
 }
 
-export function parseCatalog(body: unknown, provider: GatewayId, baseUrl: string): ChatModel[] {
+export function parseCatalog(body: unknown, provider: GatewayId, baseUrl: string, capabilities?: unknown): ChatModel[] {
   const entries = record(body)?.data;
   if (!Array.isArray(entries)) throw new Error("Experiential returned a model catalog without a data array.");
+  const detailsById = new Map<string, Record<string, unknown>>();
+  const details = record(capabilities)?.data;
+  if (Array.isArray(details)) {
+    for (const value of details) {
+      const row = record(value);
+      if (typeof row?.id === "string") detailsById.set(row.id, row);
+    }
+  }
   const models = new Map<string, ChatModel>();
   for (const value of entries) {
     const entry = record(value);
-    const model = entry && chatModel(entry, provider, baseUrl);
+    const model = entry && chatModel(entry, provider, baseUrl, detailsById);
     if (model) models.set(model.id, model);
   }
   return [...models.values()];

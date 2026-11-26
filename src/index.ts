@@ -21,6 +21,15 @@ interface ScopedCatalog extends ModelsStoreEntry {
   gatewayScope: string;
 }
 
+function cachedEfforts(stored?: Readonly<ModelsStoreEntry>) {
+  const data = stored?.models.flatMap(model => {
+    if (!("thinkingLevelMap" in model) || !model.thinkingLevelMap) return [];
+    const efforts = Object.values(model.thinkingLevelMap).filter(value => typeof value === "string");
+    return [{ id: model.id, supported_reasoning_efforts: efforts }];
+  });
+  return { data };
+}
+
 function credentialForEndpoint(credential: ApiKeyCredential | undefined, endpoint: string | undefined) {
   if (!endpoint || credential?.env?.EXPLABS_BASE_URL === endpoint) return credential;
   return undefined;
@@ -78,16 +87,25 @@ export function gatewayProvider(id: GatewayId, endpoint: string) {
       const key = context.credential?.type === "api_key" && context.credential.key;
       if (!key) throw new Error("Sign in to " + name + " in Pi before refreshing its models.");
       const root = catalogRoot(context.baseUrl);
-      const response = await fetch(root + "/models", {
-        headers: { Accept: "application/json", Authorization: "Bearer " + key },
-        signal: AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]),
-        redirect: "error",
-      });
-      if (!response.ok) {
-        const hint = response.status === 401 || response.status === 403 ? " Check the gateway API key." : "";
-        throw new Error(name + " model discovery returned HTTP " + response.status + "." + hint);
+      const signal = AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]);
+      async function list(url: string) {
+        const response = await fetch(url, {
+          headers: { Accept: "application/json", Authorization: "Bearer " + key }, signal, redirect: "error",
+        });
+        if (!response.ok) {
+          const hint = response.status === 401 || response.status === 403 ? " Check the gateway API key." : "";
+          throw new Error(name + " model discovery returned HTTP " + response.status + "." + hint);
+        }
+        return response.json();
       }
-      return parseCatalog(await response.json(), id, root);
+      // The hosted integration catalog has the user-facing IDs. Its sibling lists the account's reasoning efforts.
+      const hasNativeCatalog = hosted && new URL(root).pathname.endsWith("/api/v1");
+      const [catalog, capabilities] = await Promise.all([
+        list(root + "/models"),
+        hasNativeCatalog ? list(new URL("../../v1/models", root + "/").href).catch(() => undefined) : undefined,
+      ]);
+      const details = hasNativeCatalog && !Array.isArray(capabilities?.data) ? cachedEfforts(context.stored) : capabilities;
+      return parseCatalog(catalog, id, root, details);
     },
   });
 
