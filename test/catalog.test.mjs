@@ -94,6 +94,7 @@ test("matches account capabilities by exact ID then canonical slug while preserv
     { id: "vendor/other", canonical_slug: "other", supported_parameters: ["tools", "reasoning"] },
   ] };
   const capabilities = { data: [
+    { id: "vendor/demo", object: "model" },
     { id: "demo", supports_reasoning: true, supported_reasoning_efforts: ["high", "max"] },
     { id: "vendor/demo:fast", supported_reasoning_efforts: ["low"] },
     { id: "demo:fast", supported_reasoning_efforts: ["minimal"] },

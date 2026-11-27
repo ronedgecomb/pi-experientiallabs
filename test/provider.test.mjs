@@ -88,12 +88,14 @@ test("hosted discovery keeps known efforts during a capabilities outage and isol
   const catalog = { data: ["flash", "limited"].map(id => ({ id, supported_parameters: ["tools", "reasoning"] })) };
   const detailed = { data: [{ id: "flash", supported_reasoning_efforts: ["none", "high", "max"] },
     { id: "limited", supports_reasoning: false, supported_reasoning_efforts: [] }] };
+  const platform = "https://gateway.test/proxy/api/models?supports=reasoning&limit=500&offset=0";
   let capabilities;
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     calls.push([url, options.headers.Authorization]);
     assert.equal(options.redirect, "error");
     if (url === root + "/models") return Response.json(catalog);
+    if (url === platform) return new Response(null, { status: 503 });
     assert.equal(url, "https://gateway.test/proxy/v1/models");
     return capabilities ? Response.json(capabilities) : new Response(null, { status: 404 });
   });
@@ -108,32 +110,83 @@ test("hosted discovery keeps known efforts during a capabilities outage and isol
   assert.deepEqual(await levels(), [["off", "high", "max"], ["off"]]);
   capabilities = undefined;
   assert.deepEqual(await levels(), [["off", "high", "max"], ["off"]]);
+  capabilities = { data: [{ id: "flash" }, { id: "limited", supported_reasoning_efforts: ["low"] }] };
+  assert.deepEqual(await levels(), [["off", "high", "max"], ["low"]]);
+  capabilities = { data: [{ id: "flash" }, { id: "limited" }] };
   await login("key-b");
   assert.deepEqual(await levels(), [defaults, defaults]);
-  assert.deepEqual(calls.slice(-2).sort(), [
-    [root + "/models", "Bearer key-b"], ["https://gateway.test/proxy/v1/models", "Bearer key-b"],
+  assert.deepEqual(calls.slice(-3).sort(), [
+    [root + "/models", "Bearer key-b"], ["https://gateway.test/proxy/v1/models", "Bearer key-b"], [platform, "Bearer key-b"],
   ].sort());
-  assert.equal(calls.length, 8);
+  assert.equal(calls.filter(([url]) => url === platform).length, 4);
+});
+
+test("hosted discovery uses the ordered default route when a catalog page omits it", async t => {
+  const root = "https://gateway.test/api/v1";
+  const slug = "deepseek-v4.1-flash";
+  const ids = ["vendor/" + slug, "vendor/" + slug + ":fast"];
+  const providers = [
+    { id: "later", capabilities: { supported_reasoning_efforts: ["low"] } },
+    { id: "closed", available_to_org: false, capabilities: { supported_reasoning_efforts: ["minimal"] } },
+    { id: "lead", capabilities: { supported_reasoning_efforts: ["none", "high", "max"] } },
+  ];
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async url => {
+    calls.push(url);
+    const { pathname, searchParams } = new URL(url);
+    if (pathname === "/api/v1/models") return Response.json({ data: [
+      { id: ids[0], canonical_slug: slug, supported_parameters: ["tools", "reasoning"] },
+      { id: ids[1], canonical_slug: slug },
+    ] });
+    if (pathname === "/v1/models") return Response.json({ data: [{ id: slug }] });
+    if (pathname === "/api/models") {
+      const row = searchParams.get("offset") === "0" ? { model: { slug: "catalog-only" } }
+        : { model: { slug }, providers, default_provider_ids: [] };
+      return Response.json({ models: [row], total: 2 });
+    }
+    if (pathname === "/api/models/" + slug) return Response.json({ providers, default_waterfall: [
+      { position: 2, model_provider_id: "later" }, { position: 0, model_provider_id: "closed" },
+      { position: 1, model_provider_id: "lead" },
+    ] });
+    return new Response(null, { status: 404 });
+  });
+  const models = createModels();
+  models.setProvider(gatewayProvider("experiential", root));
+  await models.login("experiential", "api_key", { prompt: async () => "test-key", notify() {} });
+  assert.equal((await models.refresh()).errors.size, 0);
+  for (const id of ids) assert.deepEqual(getSupportedThinkingLevels(models.getModel("experiential", id)), ["off", "high", "max"]);
+  assert.equal(models.getModel("experiential", "catalog-only"), undefined);
+  assert.equal(calls.filter(url => new URL(url).pathname === "/api/models/" + slug).length, 1);
 });
 
 test("Pi sends the selected efforts over the hosted Messages, Responses, and chat endpoints", async t => {
   const claude = "anthropic/claude-demo";
   const gpt = "openai/gpt-5-demo";
-  const flash = "deepseek-v4.1-flash";
+  const flashSlug = "deepseek-v4.1-flash-uncensored";
+  const flash = "deepseek/" + flashSlug;
   const requests = [];
   const server = createServer(async (req, res) => {
     const { pathname } = new URL(req.url, "http://localhost");
     if (pathname === "/api/v1/models") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ data: [{ id: claude, canonical_slug: "claude-demo" }, { id: gpt, canonical_slug: "gpt-5-demo" },
-        { id: flash, supported_parameters: ["tools", "reasoning"] }] }));
+        { id: flash, canonical_slug: flashSlug, supported_parameters: ["tools", "reasoning"] }] }));
       return;
     }
     if (pathname === "/v1/models") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ data: [{ id: "claude-demo", supported_reasoning_efforts: ["high", "max"] },
-        { id: flash, supported_reasoning_efforts: ["none", "high", "max"] },
+        { id: flashSlug, object: "model", created: 0, owned_by: "exp" },
         { id: "gpt-5-demo", supported_reasoning_efforts: ["xhigh", "max"] }] }));
+      return;
+    }
+    if (pathname === "/api/models") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ models: [{ model: { slug: flashSlug }, default_provider_ids: ["cloud"],
+        providers: [
+          { id: "other", capabilities: { supported_reasoning_efforts: ["medium"] } },
+          { id: "cloud", capabilities: { supported_reasoning_efforts: ["none", "low", "high", "max"] } },
+        ] }], total: 1 }));
       return;
     }
     const chunks = [];
@@ -180,8 +233,8 @@ test("Pi sends the selected efforts over the hosted Messages, Responses, and cha
   models.setProvider(gatewayProvider("experiential", "http://127.0.0.1:" + server.address().port + "/api/v1"));
   await models.login("experiential", "api_key", { prompt: async () => "test-hosted-key", notify() {} });
   assert.equal((await models.refresh()).errors.size, 0);
-  assert.deepEqual(getSupportedThinkingLevels(models.getModel("experiential", flash)), ["off", "high", "max"]);
-  for (const [modelId, reasoning] of [[claude, "max"], [gpt, "xhigh"], [flash], [flash, "high"], [flash, "max"]]) {
+  assert.deepEqual(getSupportedThinkingLevels(models.getModel("experiential", flash)), ["off", "low", "high", "max"]);
+  for (const [modelId, reasoning] of [[claude, "max"], [gpt, "xhigh"], [flash], [flash, "low"], [flash, "high"], [flash, "max"]]) {
     const model = models.getModel("experiential", modelId);
     const message = await models.completeSimple(model, {
       messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
@@ -191,7 +244,7 @@ test("Pi sends the selected efforts over the hosted Messages, Responses, and cha
   }
   assert.deepEqual(requests.map(({ path, body }) => [path, body.model, body.reasoning_effort ?? body.reasoning?.effort ?? body.output_config?.effort]), [
     ["/api/v1/messages", claude, "max"], ["/api/v1/responses", gpt, "xhigh"],
-    ["/api/v1/chat/completions", flash, "none"], ["/api/v1/chat/completions", flash, "high"],
+    ["/api/v1/chat/completions", flash, "none"], ["/api/v1/chat/completions", flash, "low"], ["/api/v1/chat/completions", flash, "high"],
     ["/api/v1/chat/completions", flash, "max"],
   ]);
   assert.equal(requests[0].body.thinking.type, "adaptive");
