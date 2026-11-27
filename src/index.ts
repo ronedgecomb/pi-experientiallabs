@@ -3,6 +3,7 @@ import { createProvider, envApiKeyAuth, type ApiKeyAuth, type ApiKeyCredential, 
 import { anthropicMessagesApi, openAICompletionsApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { parseCatalog, type GatewayApi, type GatewayId } from "./catalog.ts";
+import { fillHostedThinking } from "./hosted-thinking.ts";
 
 const hostedUrl = "https://api.experientiallabs.ai/api/v1";
 const localUrl = "http://127.0.0.1:8000/v1";
@@ -19,15 +20,6 @@ function apiRoot(value: string): string {
 
 interface ScopedCatalog extends ModelsStoreEntry {
   gatewayScope: string;
-}
-
-function cachedEfforts(stored?: Readonly<ModelsStoreEntry>) {
-  const data = stored?.models.flatMap(model => {
-    if (!("thinkingLevelMap" in model) || !model.thinkingLevelMap) return [];
-    const efforts = Object.values(model.thinkingLevelMap).filter(value => typeof value === "string");
-    return [{ id: model.id, supported_reasoning_efforts: efforts }];
-  });
-  return { data };
 }
 
 function credentialForEndpoint(credential: ApiKeyCredential | undefined, endpoint: string | undefined) {
@@ -98,14 +90,16 @@ export function gatewayProvider(id: GatewayId, endpoint: string) {
         }
         return response.json();
       }
-      // The hosted integration catalog has the user-facing IDs. Its sibling lists the account's reasoning efforts.
       const hasNativeCatalog = hosted && new URL(root).pathname.endsWith("/api/v1");
       const [catalog, capabilities] = await Promise.all([
         list(root + "/models"),
         hasNativeCatalog ? list(new URL("../../v1/models", root + "/").href).catch(() => undefined) : undefined,
       ]);
-      const details = hasNativeCatalog && !Array.isArray(capabilities?.data) ? cachedEfforts(context.stored) : capabilities;
-      return parseCatalog(catalog, id, root, details);
+      const models = parseCatalog(catalog, id, root, capabilities);
+      if (hasNativeCatalog) {
+        await fillHostedThinking(models, catalog.data, context.stored, new URL("../models", root + "/"), list);
+      }
+      return models;
     },
   });
 

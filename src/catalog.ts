@@ -4,7 +4,7 @@ export type GatewayApi = "openai-completions" | "openai-responses" | "anthropic-
 export type GatewayId = "experiential" | "experiential-local";
 export type ChatModel = Model<GatewayApi>;
 
-function record(value: unknown): Record<string, unknown> | undefined {
+export function record(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
@@ -48,7 +48,7 @@ function tokenLimits(entry: Record<string, unknown>): Pick<ChatModel, "contextWi
   return { contextWindow: total ? Math.min(total, contextWindow) : contextWindow, maxTokens };
 }
 
-function thinkingLevels(efforts: unknown, supported: unknown, fallback: boolean): Pick<ChatModel, "reasoning" | "thinkingLevelMap"> {
+export function thinkingSettings(api: GatewayApi, efforts: unknown, supported: unknown, fallback: boolean) {
   if (supported === false) return { reasoning: false, thinkingLevelMap: {} };
   if (!Array.isArray(efforts)) return { reasoning: supported === true || fallback };
 
@@ -57,7 +57,11 @@ function thinkingLevels(efforts: unknown, supported: unknown, fallback: boolean)
     const wire = level === "off" ? "none" : level;
     thinkingLevelMap[level] = efforts.includes(wire) ? wire : null;
   }
-  return { reasoning: Object.values(thinkingLevelMap).some(value => value !== null), thinkingLevelMap };
+  const reasoning = Object.values(thinkingLevelMap).some(value => value !== null);
+  return {
+    reasoning, thinkingLevelMap,
+    ...(api === "anthropic-messages" && reasoning ? { compat: { forceAdaptiveThinking: true } } : {}),
+  };
 }
 
 function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl: string,
@@ -82,7 +86,7 @@ function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl:
   const suffix = id.match(/:[^/:]+$/)?.[0];
   const nativeId = suffix && !slug.includes(":") ? slug + suffix : slug;
   const details = detailsById.get(id) ?? detailsById.get(nativeId) ?? detailsById.get(slug);
-  const thinking = thinkingLevels(entry.supported_reasoning_efforts ?? details?.supported_reasoning_efforts,
+  const thinking = thinkingSettings(api, entry.supported_reasoning_efforts ?? details?.supported_reasoning_efforts,
     entry.supports_reasoning ?? details?.supports_reasoning, advertisedReasoning);
   const prices = record(entry.pricing);
   const tokensField = entry.chat_max_tokens_field;
@@ -105,8 +109,6 @@ function chatModel(entry: Record<string, unknown>, provider: GatewayId, baseUrl:
     },
     ...(api === "openai-completions" && (tokensField === "max_tokens" || tokensField === "max_completion_tokens")
       ? { compat: { maxTokensField: tokensField } } : {}),
-    ...(api === "anthropic-messages" && thinking.reasoning && thinking.thinkingLevelMap
-      ? { compat: { forceAdaptiveThinking: true } } : {}),
   };
 }
 
@@ -118,7 +120,9 @@ export function parseCatalog(body: unknown, provider: GatewayId, baseUrl: string
   if (Array.isArray(details)) {
     for (const value of details) {
       const row = record(value);
-      if (typeof row?.id === "string") detailsById.set(row.id, row);
+      if (typeof row?.id === "string" && (Array.isArray(row.supported_reasoning_efforts) || typeof row.supports_reasoning === "boolean")) {
+        detailsById.set(row.id, row);
+      }
     }
   }
   const models = new Map<string, ChatModel>();
